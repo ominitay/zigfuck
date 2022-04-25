@@ -9,8 +9,8 @@ pub const Tag = enum(u3) {
     decrement,
     output,
     input,
-    begin_loop,
-    end_loop,
+    loop_begin,
+    loop_end,
 
     pub fn isMove(t: Tag) bool {
         return switch (t) {

@@ -15,8 +15,8 @@ pub fn main() !void {
 
     _ = args.skip(); // own path
     const source_path = args.next().?;
-    // const out_path = args.next().?;
-    // std.debug.assert(args.skip() == false);
+    const out_path = args.next().?;
+    std.debug.assert(args.skip() == false);
 
     var source_file = try std.fs.cwd().openFile(source_path, .{});
     defer source_file.close();
@@ -24,27 +24,22 @@ pub fn main() !void {
     const source_bytes = try source_file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(source_bytes);
 
-    var bir = try parse(allocator, source_bytes);
-    std.debug.print("{any}\n", .{bir.instructions.items});
-    try bir.optimise();
-    std.debug.print("{any}\n", .{bir.instructions.items});
+    var out_file = try std.fs.cwd().createFile(out_path, .{ .truncate = true, .mode = 0o775 });
+    defer out_file.close();
+    const out_writer = out_file.writer();
 
-    // var out_file = try std.fs.cwd().createFile(out_path, .{ .truncate = true, .mode = 0o775 });
-    // defer out_file.close();
-    // const out_writer = out_file.writer();
-
-    // try generate(allocator, codegen.x64, source_bytes, out_writer);
+    try generate(allocator, codegen.x64, source_bytes, out_writer);
 }
 
-fn generate(allocator: std.mem.Allocator, Codegen: anytype, source: []const u8, writer: anytype) !void {
+fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, writer: anytype) !void {
+    var bir = try parse(allocator, source);
+    try bir.optimise();
+
     var buf = std.io.bufferedWriter(writer);
     const w = buf.writer();
 
-    var cg = try Codegen.init(allocator, source);
-    defer cg.deinit(allocator);
-    const code = try cg.gen();
+    const code = try cg.generate(allocator, bir.instructions.items);
     defer allocator.free(code);
-    // const code = [_]u8{ 0xb8, 0xe7, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x3c, 0x25, 0x91, 0x00, 0x40, 0x00, 0x0f, 0x05, 0x2a };
     const code_prefix = [_]u8{ 0x49, 0xba } ++ [_]u8{ 0x00 } ** 8; // this is used to load the address of the first cell to r10. the address is copied in later once we know what it will be.
     const shstrtab = "\x00.text\x00.bss\x00.shstrtab\x00".*;
     const section_count = 4;
@@ -84,7 +79,7 @@ fn generate(allocator: std.mem.Allocator, Codegen: anytype, source: []const u8, 
         .virt_addr = elf.base_addr,
         .phys_addr = elf.base_addr,
         .file_size = file_size,
-        .mem_size = file_size,
+        .mem_size = file_size + bss_len,
         .alignment = 0x1000,
     };
     try w.writeStruct(program_header);

@@ -1,37 +1,39 @@
 const std = @import("std");
 
+const Bir = @import("../Bir.zig");
 const Self = @This();
 
 code: std.ArrayList(u8),
 loopstack: std.ArrayList(u64),
-source: []const u8,
+bir: []const Bir.Instruction,
 
-pub fn init(allocator: std.mem.Allocator, source: []const u8) !Self {
-    return Self{
+pub fn generate(allocator: std.mem.Allocator, bir: []const Bir.Instruction) ![]const u8 {
+    var self = Self{
         .code = std.ArrayList(u8).init(allocator),
         .loopstack = std.ArrayList(u64).init(allocator),
-        .source = try allocator.dupe(u8, source),
+        .bir = bir,
     };
+    defer self.deinit();
+
+    return try self.gen();
 }
 
-pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
+fn deinit(self: Self) void {
     self.code.deinit();
     self.loopstack.deinit();
-    allocator.free(self.source);
 }
 
-pub fn gen(self: *Self) ![]const u8 {
-    for (self.source) |b| {
-        switch (b) {
-            '>' => try self.moveRight(),
-            '<' => try self.moveLeft(),
-            '+' => try self.increment(),
-            '-' => try self.decrement(),
-            '.' => try self.output(),
-            // ',' => try self.input(),
-            '[' => try self.loopStart(),
-            ']' => try self.loopEnd(),
-            else => {}, // comment
+fn gen(self: *Self) ![]const u8 {
+    for (self.bir) |instr| {
+        switch (instr.tag) {
+            .move_right => try self.moveRight(instr.payload),
+            .move_left => try self.moveLeft(instr.payload),
+            .increment => try self.increment(instr.payload),
+            .decrement => try self.decrement(instr.payload),
+            .output => try self.output(),
+            .input => try self.input(),
+            .loop_begin => try self.loopBegin(),
+            .loop_end => try self.loopEnd(),
         }
     }
 
@@ -42,27 +44,61 @@ pub fn gen(self: *Self) ![]const u8 {
     return self.code.toOwnedSlice();
 }
 
-pub fn moveRight(self: *Self) !void {
-    // inc r10
-    try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xc2 });
+fn moveRight(self: *Self, count: u32) !void {
+    std.debug.assert(count != 0);
+    if (count == 1) {
+        // inc r10
+        try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xc2 });
+    } else {
+        // add r10, count
+        if (count <= std.math.maxInt(u8)) {
+            try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xc2, @intCast(u8, count) });
+        } else {
+            try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xc2 });
+            try self.code.appendSlice(&@bitCast([4]u8, count)); // write the 32 bit value
+        }
+    }
 }
 
-pub fn moveLeft(self: *Self) !void {
-    // dec r10
-    try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xca });
+fn moveLeft(self: *Self, count: u32) !void {
+    std.debug.assert(count != 0);
+    if (count == 1) {
+        // dec r10
+        try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xca });
+    } else {
+        // sub r10, count
+        if (count <= std.math.maxInt(u8)) {
+            try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xea, @intCast(u8, count) });
+        } else {
+            try self.code.appendSlice(&[_]u8{ 0x49, 0x91, 0xea });
+            try self.code.appendSlice(&@bitCast([4]u8, count)); // write the 32 bit value
+        }
+    }
 }
 
-pub fn increment(self: *Self) !void  {
-    // inc byte [r10]
-    try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x02 });
+fn increment(self: *Self, count: u32) !void {
+    std.debug.assert(count != 0);
+    if (count == 1) {
+        // inc byte [r10]
+        try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x02 });
+    } else {
+        // add byte [r10], count
+        try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x02, @truncate(u8, count) });
+    }
 }
 
-pub fn decrement(self: *Self) !void {
-    // dec byte [r10]
-    try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x0a });
+fn decrement(self: *Self, count: u32) !void {
+    std.debug.assert(count != 0);
+    if (count == 1) {
+        // dec byte [r10]
+        try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x0a });
+    } else {
+        // sub byte [r10], count
+        try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x2a, @truncate(u8, count) });
+    }
 }
 
-pub fn output(self: *Self) !void {
+fn output(self: *Self) !void {
     try self.code.appendSlice(&[_]u8{
         // mov rax, 1
         0xb8, 0x01, 0x00, 0x00, 0x00,
@@ -76,21 +112,32 @@ pub fn output(self: *Self) !void {
     try self.syscall();
 }
 
-// pub fn input(self: *Self) !void {
+fn input(self: *Self) !void {
+    try self.code.appendSlice(&[_]u8{
+        // mov rax, 0
+        0xb8, 0x00, 0x00, 0x00, 0x00,
+        // mov rdi, 0
+        0xbf, 0x00, 0x00, 0x00, 0x00,
+        // mov rsi, r10
+        0x4c, 0x89, 0xd6,
+        // mov rdx, 1
+        0xba, 0x01, 0x00, 0x00, 0x00,
+    });
+    try self.syscall();
+}
 
-// }
-
-pub fn loopStart(self: *Self) !void {
+fn loopBegin(self: *Self) !void {
     try self.loopstack.append(self.code.items.len);
     try self.code.appendSlice(&[_]u8{
         // cmp byte [r10], 0
         0x41, 0x80, 0x3a, 0x00,
         // je <end of loop> ; zeroes are filled in when the loop is closed
-        0x0f, 0x84, 0x00, 0x00, 0x00, 0x00,
+        0x0f, 0x84, 0x00, 0x00,
+        0x00, 0x00,
     });
 }
 
-pub fn loopEnd(self: *Self) !void {
+fn loopEnd(self: *Self) !void {
     const start = self.loopstack.popOrNull() orelse return error.NoLoopStart;
     const end = self.code.items.len;
 
@@ -104,10 +151,10 @@ pub fn loopEnd(self: *Self) !void {
         0x0f, 0x85,
     });
     // finish our jne instruction
-    try self.code.appendSlice(&std.mem.toBytes(-@intCast(i32, offset)));
+    try self.code.appendSlice(&@bitCast([4]u8, -@intCast(i32, offset)));
 }
 
-pub fn exit(self: *Self) !void {
+fn exit(self: *Self) !void {
     try self.code.appendSlice(&[_]u8{
         // mov rax, 60
         0xb8, 0x3c, 0x00, 0x00, 0x00,
@@ -117,7 +164,7 @@ pub fn exit(self: *Self) !void {
     try self.syscall();
 }
 
-pub fn syscall(self: *Self) !void {
+fn syscall(self: *Self) !void {
     // syscall
     try self.code.appendSlice(&[_]u8{ 0x0f, 0x05 });
 }

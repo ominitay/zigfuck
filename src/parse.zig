@@ -13,8 +13,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Bir {
             '-' => try instructions.append(.{ .tag = .decrement, .payload = 1 }),
             '.' => try instructions.append(.{ .tag = .output}),
             ',' => try instructions.append(.{ .tag = .input}),
-            '[' => try instructions.append(.{ .tag = .begin_loop}),
-            ']' => try instructions.append(.{ .tag = .end_loop}),
+            '[' => try instructions.append(.{ .tag = .loop_begin}),
+            ']' => try instructions.append(.{ .tag = .loop_end}),
             else => {},
         }
     }
