@@ -46,12 +46,15 @@ fn gen(self: *Self) ![]const u8 {
 
 fn moveRight(self: *Self, count: u32) !void {
     std.debug.assert(count != 0);
+    // we can only go up to this, since the instructions we use expect a signed operand.
+    // this is probably a reasonable limitation -- is anyone going to type over 2 billion '>'s?
+    std.debug.assert(count <= std.math.maxInt(i32));
     if (count == 1) {
         // inc r10
         try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xc2 });
     } else {
         // add r10, count
-        if (count <= std.math.maxInt(u8)) {
+        if (count <= std.math.maxInt(i8)) { // for an 8-bit add, the operand is signed
             try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xc2, @intCast(u8, count) });
         } else {
             try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xc2 });
@@ -62,15 +65,16 @@ fn moveRight(self: *Self, count: u32) !void {
 
 fn moveLeft(self: *Self, count: u32) !void {
     std.debug.assert(count != 0);
+    std.debug.assert(count <= std.math.maxInt(i32));
     if (count == 1) {
         // dec r10
         try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xca });
     } else {
         // sub r10, count
-        if (count <= std.math.maxInt(u8)) {
+        if (count <= std.math.maxInt(i8)) { // for an 8-bit sub, the operand is signed
             try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xea, @intCast(u8, count) });
         } else {
-            try self.code.appendSlice(&[_]u8{ 0x49, 0x91, 0xea });
+            try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xea });
             try self.code.appendSlice(&@bitCast([4]u8, count)); // write the 32 bit value
         }
     }
