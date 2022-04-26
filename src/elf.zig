@@ -69,6 +69,8 @@ pub const ProgramHeader = extern struct {
         dynamic = 2,
         interp = 3,
         note = 4,
+        phdr = 6,
+        tls = 7,
     };
 
     const Flags = packed struct {
