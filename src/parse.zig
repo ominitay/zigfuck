@@ -11,7 +11,8 @@ const State = enum {
 
 pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Bir {
     var instructions = std.MultiArrayList(Bir.Instruction){};
-    try instructions.ensureTotalCapacity(allocator, source.len);
+    errdefer instructions.deinit(allocator);
+    try instructions.ensureTotalCapacity(allocator, source.len / 2); // Probably a reasonable amount to reserve, should be changed after testing
 
     var state: State = .start;
     var counter: u32 = 0;

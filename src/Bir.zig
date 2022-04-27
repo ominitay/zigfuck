@@ -37,6 +37,10 @@ pub const List = std.MultiArrayList(Instruction);
 instructions: List,
 allocator: std.mem.Allocator,
 
+pub fn deinit(self: *Self) void {
+    self.instructions.deinit(self.allocator);
+}
+
 pub fn optimise(self: *Self) !void {
     defer self.instructions.shrinkAndFree(self.allocator, self.instructions.len);
     // TODO: Implement optimisations!

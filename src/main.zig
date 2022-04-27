@@ -33,6 +33,7 @@ pub fn main() !void {
 
 fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, writer: anytype) !void {
     var bir = try parse(allocator, source);
+    defer bir.deinit();
     try bir.optimise();
 
     var buf = std.io.bufferedWriter(writer);
