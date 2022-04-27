@@ -5,9 +5,9 @@ const Self = @This();
 
 code: std.ArrayList(u8),
 loopstack: std.ArrayList(u64),
-bir: []const Bir.Instruction,
+bir: Bir.List.Slice,
 
-pub fn generate(allocator: std.mem.Allocator, bir: []const Bir.Instruction) ![]const u8 {
+pub fn generate(allocator: std.mem.Allocator, bir: Bir.List.Slice) ![]const u8 {
     var self = Self{
         .code = std.ArrayList(u8).init(allocator),
         .loopstack = std.ArrayList(u64).init(allocator),
@@ -24,12 +24,12 @@ fn deinit(self: Self) void {
 }
 
 fn gen(self: *Self) ![]const u8 {
-    for (self.bir) |instr| {
-        switch (instr.tag) {
-            .move_right => try self.moveRight(instr.payload),
-            .move_left => try self.moveLeft(instr.payload),
-            .increment => try self.increment(instr.payload),
-            .decrement => try self.decrement(instr.payload),
+    for (self.bir.items(.tag)) |tag, i| {
+        switch (tag) {
+            .move_right => try self.moveRight(self.bir.items(.payload)[i]),
+            .move_left => try self.moveLeft(self.bir.items(.payload)[i]),
+            .increment => try self.increment(self.bir.items(.payload)[i]),
+            .decrement => try self.decrement(self.bir.items(.payload)[i]),
             .output => try self.output(),
             .input => try self.input(),
             .loop_begin => try self.loopBegin(),
@@ -111,7 +111,8 @@ fn output(self: *Self) !void {
         // mov rsi, r10
         0x4c, 0x89, 0xd6,
         // mov rdx, 1
-        0xba, 0x01, 0x00, 0x00, 0x00,
+        0xba, 0x01,
+        0x00, 0x00, 0x00,
     });
     try self.syscall();
 }
@@ -125,7 +126,8 @@ fn input(self: *Self) !void {
         // mov rsi, r10
         0x4c, 0x89, 0xd6,
         // mov rdx, 1
-        0xba, 0x01, 0x00, 0x00, 0x00,
+        0xba, 0x01,
+        0x00, 0x00, 0x00,
     });
     try self.syscall();
 }

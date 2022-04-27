@@ -27,52 +27,57 @@ pub const Tag = enum(u3) {
     }
 };
 
-pub const Instruction = packed struct {
+pub const Instruction = struct {
     payload: u32 = 0,
     tag: Tag,
 };
 
-// TODO: MultiArrayList
-instructions: std.ArrayList(Instruction),
+pub const List = std.MultiArrayList(Instruction);
+
+instructions: List,
+allocator: std.mem.Allocator,
 
 pub fn optimise(self: *Self) !void {
+    defer self.instructions.shrinkAndFree(self.allocator, self.instructions.len);
     self.combine();
     // TODO: Implement optimisations!
 }
 
 // Combines consecutive instructions where possible
 fn combine(self: *Self) void {
-    var previous: *Instruction = &self.instructions.items[0];
+    var previous_index: usize = 0;
     var i: usize = 1;
-    while (i < self.instructions.items.len) {
-        const current = &self.instructions.items[i];
+    while (i < self.instructions.len) {
+        var previous = self.instructions.get(previous_index);
+        var current = self.instructions.get(i);
         if ((previous.tag.isMove() and current.tag.isMove()) or (previous.tag.isIncOrDec() and current.tag.isIncOrDec())) {
             if (previous.tag == current.tag) {
                 previous.payload += current.payload;
+                self.instructions.set(previous_index, previous);
                 _ = self.instructions.orderedRemove(i);
             } else {
                 if (previous.payload > current.payload) {
                     previous.payload -= current.payload;
+                    self.instructions.set(previous_index, previous);
                     _ = self.instructions.orderedRemove(i);
                 } else if (previous.payload < current.payload) {
                     current.payload -= previous.payload;
+                    self.instructions.set(previous_index, current);
                     _ = self.instructions.orderedRemove(i);
                 } else { // We remove both the previous and next instructions, as they cancel each other out
-                    std.mem.copy(Instruction, self.instructions.items[i - 1 ..], self.instructions.items[i + 1 ..]);
-                    self.instructions.items.len -= 2;
+                    _ = self.instructions.orderedRemove(i);
+                    _ = self.instructions.orderedRemove(previous_index);
                     i -= 1;
-                    if (self.instructions.items.len < 2) break;
+                    if (self.instructions.len < 2) break;
                     if (i == 0) i = 1;
-                    previous = &self.instructions.items[i - 1];
+                    previous_index = i - 1;
                 }
             }
 
             continue;
         }
 
-        previous = current;
+        previous_index = i;
         i += 1;
     }
-
-    self.instructions.shrinkAndFree(self.instructions.items.len);
 }

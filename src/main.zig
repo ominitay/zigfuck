@@ -38,7 +38,7 @@ fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, write
     var buf = std.io.bufferedWriter(writer);
     const w = buf.writer();
 
-    const code = try cg.generate(allocator, bir.instructions.items);
+    const code = try cg.generate(allocator, bir.instructions.slice());
     defer allocator.free(code);
     var code_prefix = [_]u8{ 0x49, 0xba } ++ [_]u8{0x00} ** 8; // this is used to load the address of the first cell to r10. the address is copied in later once we know what it will be.
     const shstrtab = "\x00.text\x00.bss\x00.shstrtab\x00".*;
