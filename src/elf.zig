@@ -108,6 +108,12 @@ pub const SectionHeader = extern struct {
     };
 };
 
+pub fn alignUp(address: u64, alignment: u64) u64 {
+    const remainder = address % alignment;
+    if (remainder == 0) return address;
+    return address + alignment - remainder;
+}
+
 test "Header size" {
     try std.testing.expect(@sizeOf(Header) == 64);
     try std.testing.expect(@sizeOf(ProgramHeader) == 56);

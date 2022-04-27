@@ -40,27 +40,24 @@ fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, write
 
     const code = try cg.generate(allocator, bir.instructions.items);
     defer allocator.free(code);
-    const code_prefix = [_]u8{ 0x49, 0xba } ++ [_]u8{0x00} ** 8; // this is used to load the address of the first cell to r10. the address is copied in later once we know what it will be.
+    var code_prefix = [_]u8{ 0x49, 0xba } ++ [_]u8{0x00} ** 8; // this is used to load the address of the first cell to r10. the address is copied in later once we know what it will be.
     const shstrtab = "\x00.text\x00.bss\x00.shstrtab\x00".*;
     const section_count = 4;
-    const phdr_count = 2;
+    const phdr_count = 3;
 
     const bss_len = cell_count;
-
-    const sections = try std.mem.concat(allocator, u8, &[_][]const u8{ &code_prefix, code, &shstrtab });
-    defer allocator.free(sections);
 
     const header_len = @sizeOf(elf.Header) + phdr_count * @sizeOf(elf.ProgramHeader);
 
     const text_off = header_len;
-    const text_pos = header_len + elf.base_addr;
+    const text_pos = header_len + elf.base_addr + 0x1000;
     const text_len = code.len + code_prefix.len;
     const shstrtab_off = text_off + text_len;
     const section_header_off = shstrtab_off + shstrtab.len;
-    const bss_off = shstrtab_off + shstrtab.len;
-    const bss_pos = text_pos + text_len;
+    const bss_off = 0;
+    const bss_pos = elf.alignUp(text_pos + text_len, 0x1000);
 
-    std.mem.copy(u8, sections[2..], @bitCast([8]u8, bss_pos)[0..]); // add the correct address for the first cell
+    std.mem.copy(u8, code_prefix[2..], @bitCast([8]u8, bss_pos)[0..]); // add the correct address for the first cell
 
     const header = elf.Header{
         .class = .@"64",
@@ -75,7 +72,6 @@ fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, write
     };
     try w.writeStruct(header);
 
-    // FIXME: Correctly align segments (currently blocking us from setting .bss to get proper memory protection)
     const program_headers = [phdr_count]elf.ProgramHeader{
         .{ // phdrs
             .type = .loadable,
@@ -89,28 +85,30 @@ fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, write
         },
         .{ // .text and .bss
             .type = .loadable,
-            .flags = .{ .executable = true, .writable = true, .readable = true },
+            .flags = .{ .executable = true, .readable = true },
             .offset = text_off,
             .virt_addr = text_pos,
             .phys_addr = text_pos,
             .file_size = text_len,
-            .mem_size = text_len + bss_len,
+            .mem_size = text_len,
             .alignment = 0x1000,
         },
-        // .{ // .bss
-        //     .type = .loadable,
-        //     .flags = .{ .writable = true, .readable = true },
-        //     .offset = bss_off,
-        //     .virt_addr = bss_pos,
-        //     .phys_addr = bss_pos,
-        //     .file_size = 0,
-        //     .mem_size = bss_len,
-        //     .alignment = 0x1000,
-        // },
+        .{ // .bss
+            .type = .loadable,
+            .flags = .{ .writable = true, .readable = true },
+            .offset = bss_off,
+            .virt_addr = bss_pos,
+            .phys_addr = bss_pos,
+            .file_size = 0,
+            .mem_size = bss_len,
+            .alignment = 0x1000,
+        },
     };
     for (program_headers) |phdr| try w.writeStruct(phdr);
 
-    try w.writeAll(sections[0..]);
+    try w.writeAll(&code_prefix);
+    try w.writeAll(code);
+    try w.writeAll(&shstrtab);
 
     const text_str = @intCast(u32, std.mem.indexOf(u8, &shstrtab, ".text").?);
     const bss_str = @intCast(u32, std.mem.indexOf(u8, &shstrtab, ".bss").?);
