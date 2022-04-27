@@ -24,14 +24,14 @@ fn deinit(self: Self) void {
 }
 
 fn gen(self: *Self) ![]const u8 {
-    for (self.bir.items(.tag)) |tag, i| {
-        switch (tag) {
-            .move_right => try self.moveRight(self.bir.items(.payload)[i]),
-            .move_left => try self.moveLeft(self.bir.items(.payload)[i]),
-            .increment => try self.increment(self.bir.items(.payload)[i]),
-            .decrement => try self.decrement(self.bir.items(.payload)[i]),
-            .output => try self.output(),
-            .input => try self.input(),
+    var i: u32 = 0;
+    while (i < self.bir.len) : (i += 1) {
+        const instr = self.bir.toMultiArrayList().get(i);
+        switch (instr.tag) {
+            .move => try self.move(instr.payload.value),
+            .add => try self.add(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+            .output => try self.output(instr.payload.value),
+            .input => try self.input(instr.payload.value),
             .loop_begin => try self.loopBegin(),
             .loop_end => try self.loopEnd(),
         }
@@ -44,65 +44,102 @@ fn gen(self: *Self) ![]const u8 {
     return self.code.toOwnedSlice();
 }
 
-fn moveRight(self: *Self, count: u32) !void {
-    std.debug.assert(count != 0);
-    // we can only go up to this, since the instructions we use expect a signed operand.
-    // this is probably a reasonable limitation -- is anyone going to type over 2 billion '>'s?
-    std.debug.assert(count <= std.math.maxInt(i32));
-    if (count == 1) {
-        // inc r10
-        try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xc2 });
-    } else {
-        // add r10, count
-        if (count <= std.math.maxInt(i8)) { // for an 8-bit add, the operand is signed
-            try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xc2, @intCast(u8, count) });
+fn move(self: *Self, value: i32) !void {
+    std.debug.assert(value != 0);
+    if (value > 0) {
+        if (value == 1) {
+            // inc r10
+            try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xc2 });
         } else {
-            try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xc2 });
-            try self.code.appendSlice(&@bitCast([4]u8, count)); // write the 32 bit value
+            // add r10, value
+            if (value <= std.math.maxInt(i8)) {
+                try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xc2, @intCast(u8, value) });
+            } else {
+                try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xc2 });
+                try self.code.appendSlice(&@bitCast([4]u8, value)); // write the 32 bit value
+            }
+        }
+    } else {
+        if (-value == 1) {
+            // dec r10
+            try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xca });
+        } else {
+            // sub r10, value
+            if (-value <= std.math.maxInt(i8)) {
+                try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xea, @intCast(u8, -value) });
+            } else {
+                try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xea });
+                try self.code.appendSlice(&@bitCast([4]u8, -value)); // write the 32 bit value
+            }
         }
     }
 }
 
-fn moveLeft(self: *Self, count: u32) !void {
-    std.debug.assert(count != 0);
-    std.debug.assert(count <= std.math.maxInt(i32));
-    if (count == 1) {
-        // dec r10
-        try self.code.appendSlice(&[_]u8{ 0x49, 0xff, 0xca });
-    } else {
-        // sub r10, count
-        if (count <= std.math.maxInt(i8)) { // for an 8-bit sub, the operand is signed
-            try self.code.appendSlice(&[_]u8{ 0x49, 0x83, 0xea, @intCast(u8, count) });
+fn add(self: *Self, value: i32, offset: i32) !void {
+    std.debug.assert(value != 0);
+    if (value > 0) {
+        if (offset == 0) {
+            if (value == 1) {
+                // inc byte [r10]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x02 });
+            } else {
+                // add byte [r10], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x02, @intCast(u8, value) });
+            }
+        } else if (offset <= std.math.maxInt(i8) and offset >= std.math.maxInt(i8)) {
+            if (value == 1) {
+                // inc byte [r10 + offset]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x42, @bitCast(u8, @intCast(i8, offset)) });
+            } else {
+                // add byte [r10 + offset], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x42, @bitCast(u8, @intCast(i8, offset)), @intCast(u8, value) });
+            }
         } else {
-            try self.code.appendSlice(&[_]u8{ 0x49, 0x81, 0xea });
-            try self.code.appendSlice(&@bitCast([4]u8, count)); // write the 32 bit value
+            if (value == 1) {
+                // inc byte [r10 + offset]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x82});
+                try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
+            } else {
+                // add byte [r10 + offset], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x82 });
+                try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
+                try self.code.append(@intCast(u8, value)); // write the 8 bit value
+            }
+        }
+    } else {
+        if (offset == 0) {
+            if (-value == 1) {
+                // dec byte [r10]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x0a });
+            } else {
+                // sub byte [r10], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x2a, @intCast(u8, -value) });
+            }
+        } else if (offset <= std.math.maxInt(i8) and offset >= std.math.maxInt(i8)) {
+            if (-value == 1) {
+                // inc byte [r10 + offset]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x4a, @bitCast(u8, @intCast(i8, offset)) });
+            } else {
+                // sub byte [r10 + offset], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x6a, @bitCast(u8, @intCast(i8, offset)), @intCast(u8, -value) });
+            }
+        } else {
+            if (-value == 1) {
+                // inc byte [r10 + offset]
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x8a});
+                try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
+            } else {
+                // sub byte [r10 + offset], value
+                try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0xaa });
+                try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
+                try self.code.append(@intCast(u8, -value)); // write the 8 bit value
+            }
         }
     }
 }
 
-fn increment(self: *Self, count: u32) !void {
-    std.debug.assert(count != 0);
-    if (count == 1) {
-        // inc byte [r10]
-        try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x02 });
-    } else {
-        // add byte [r10], count
-        try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x02, @truncate(u8, count) });
-    }
-}
-
-fn decrement(self: *Self, count: u32) !void {
-    std.debug.assert(count != 0);
-    if (count == 1) {
-        // dec byte [r10]
-        try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x0a });
-    } else {
-        // sub byte [r10], count
-        try self.code.appendSlice(&[_]u8{ 0x41, 0x80, 0x2a, @truncate(u8, count) });
-    }
-}
-
-fn output(self: *Self) !void {
+fn output(self: *Self, offset: i32) !void {
+    std.debug.assert(offset == 0);
     try self.code.appendSlice(&[_]u8{
         // mov rax, 1
         0xb8, 0x01, 0x00, 0x00, 0x00,
@@ -117,7 +154,8 @@ fn output(self: *Self) !void {
     try self.syscall();
 }
 
-fn input(self: *Self) !void {
+fn input(self: *Self, offset: i32) !void {
+    std.debug.assert(offset == 0);
     try self.code.appendSlice(&[_]u8{
         // mov rax, 0
         0xb8, 0x00, 0x00, 0x00, 0x00,

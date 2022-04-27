@@ -3,10 +3,8 @@ const Bir = @import("Bir.zig");
 
 const State = enum {
     start,
-    right,
-    left,
-    inc,
-    dec,
+    move,
+    add,
 };
 
 pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Bir {
@@ -15,67 +13,51 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Bir {
     try instructions.ensureTotalCapacity(allocator, source.len / 2); // Probably a reasonable amount to reserve, should be changed after testing
 
     var state: State = .start;
-    var counter: u32 = 0;
+    var counter: i32 = 0;
 
-    var i: usize = 0;
+    var i: u32 = 0;
     while (i < source.len) {
         switch (state) {
             .start => switch (source[i]) {
                 '>' => {
-                    state = .right;
+                    state = .move;
                     counter = 1;
                 },
                 '<' => {
-                    state = .left;
-                    counter = 1;
+                    state = .move;
+                    counter = -1;
                 },
                 '+' => {
-                    state = .inc;
+                    state = .add;
                     counter = 1;
                 },
                 '-' => {
-                    state = .dec;
-                    counter = 1;
+                    state = .add;
+                    counter = -1;
                 },
-                '.' => try instructions.append(allocator, .{ .tag = .output }),
-                ',' => try instructions.append(allocator, .{ .tag = .input }),
-                '[' => try instructions.append(allocator, .{ .tag = .loop_begin }),
-                ']' => try instructions.append(allocator, .{ .tag = .loop_end }),
+                '.' => try instructions.append(allocator, .{ .tag = .output, .payload = .{ .value = 0 }}),
+                ',' => try instructions.append(allocator, .{ .tag = .input, .payload = .{ .value = 0 }}),
+                '[' => try instructions.append(allocator, .{ .tag = .loop_begin, .payload = .{ .none = {} }}),
+                ']' => try instructions.append(allocator, .{ .tag = .loop_end, .payload = .{ .none = {} }}),
                 else => {},
             },
-            .right => switch (source[i]) {
+            .move => switch (source[i]) {
                 '>' => counter += 1,
+                '<' => counter -= 1,
                 ' ', '\n' => {},
                 else => {
                     state = .start;
-                    try instructions.append(allocator, .{ .tag = .move_right, .payload = counter });
+                    if (counter != 0) try instructions.append(allocator, .{ .tag = .move, .payload = .{ .value = counter }});
                     continue;
                 },
             },
-            .left => switch (source[i]) {
-                '<' => counter += 1,
-                ' ', '\n' => {},
-                else => {
-                    state = .start;
-                    try instructions.append(allocator, .{ .tag = .move_left, .payload = counter });
-                    continue;
-                },
-            },
-            .inc => switch (source[i]) {
+            .add => switch (source[i]) {
                 '+' => counter += 1,
+                '-' => counter -= 1,
                 ' ', '\n' => {},
                 else => {
                     state = .start;
-                    try instructions.append(allocator, .{ .tag = .increment, .payload = counter });
-                    continue;
-                },
-            },
-            .dec => switch (source[i]) {
-                '-' => counter += 1,
-                ' ', '\n' => {},
-                else => {
-                    state = .start;
-                    try instructions.append(allocator, .{ .tag = .decrement, .payload = counter });
+                    if (counter != 0) try instructions.append(allocator, .{ .tag = .add, .payload = .{ .value_offset = .{ .value = counter, .offset = 0 }}});
                     continue;
                 },
             },
@@ -86,8 +68,5 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Bir {
 
     instructions.shrinkAndFree(allocator, instructions.len);
 
-    return Bir{
-        .instructions = instructions,
-        .allocator = allocator,
-    };
+    return Bir.init(allocator, instructions);
 }
