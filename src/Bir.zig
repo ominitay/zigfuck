@@ -56,6 +56,21 @@ pub fn deinit(self: *Self) void {
     self.instructions.deinit(self.allocator);
 }
 
+pub fn print(self: Self, writer: anytype) !void {
+    try writer.print("Bir Dump:\nInstruction count: {d}\n", .{self.instructions.len});
+    var i: u32 = 0;
+    while (i < self.instructions.len) : (i += 1) {
+        const instr = self.instructions.get(i);
+        try writer.print("%{d}: {s}", .{ i, @tagName(instr.tag) });
+        switch (instr.tag) {
+            .add => try writer.print(", {d} @ {d}", .{ instr.payload.value_offset.value, instr.payload.value_offset.offset }),
+            .move, .output, .input => try writer.print(", {d}", .{instr.payload.value}),
+            .loop_begin, .loop_end => {},
+        }
+        try writer.writeByte('\n');
+    }
+}
+
 pub fn optimise(self: *Self) !void {
     defer self.instructions.shrinkAndFree(self.allocator, self.instructions.len);
     try self.sortByOffset();
