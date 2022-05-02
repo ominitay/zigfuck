@@ -19,6 +19,25 @@ pub const Tag = enum(u3) {
     // Loops over the specified instructions, so long as the current cell is not zero.
     // Uses the `cond_branch` field.
     cond_loop,
+
+    // Optimisations
+
+    // Conditionally skips a block of code. This is generated in optimising multiplication loops.
+    // Uses the `cond_branch` field.
+    cond_branch,
+    // Multiplies the value by the current cell, and adds it to the cell specified by the offset.
+    // Uses the `value_offset` field.
+    mul,
+    // Sets the cell specified by the offset to the specified value.
+    // Uses the `value_offset` field.
+    set,
+
+    pub fn isBlock(t: Tag) bool {
+        return switch (t) {
+            .cond_loop, .cond_branch => true,
+            .add, .move, .output, .input, .mul, .set => false,
+        };
+    }
 };
 
 pub const Instruction = struct {
@@ -67,10 +86,10 @@ fn printInner(self: Self, writer: anytype, index: u32, len: u32, indent: u32) @T
         try writer.writeByteNTimes(' ', indent);
         try writer.print("%{d}: {s}", .{ i, @tagName(instr.tag) });
         switch (instr.tag) {
-            .add => try writer.print(", {d} @ {d}", .{ instr.payload.value_offset.value, instr.payload.value_offset.offset }),
+            .add, .mul, .set => try writer.print(", {d} @ {d}", .{ instr.payload.value_offset.value, instr.payload.value_offset.offset }),
             .move => try writer.print(", {d}", .{instr.payload.value}),
             .output, .input => try writer.print(", {d}", .{instr.payload.offset}),
-            .cond_loop => {
+            .cond_loop, .cond_branch => {
                 try writer.writeAll(", {\n");
                 try self.printInner(writer, i + 1, instr.payload.cond_branch.then_len, indent + 2);
                 i += instr.payload.cond_branch.then_len;
@@ -85,6 +104,7 @@ fn printInner(self: Self, writer: anytype, index: u32, len: u32, indent: u32) @T
 pub fn optimise(self: *Self) !void {
     defer self.instructions.shrinkAndFree(self.allocator, self.instructions.len);
     try self.sortByOffset();
+    try self.simpleLoop();
     // TODO: Implement optimisations!
 }
 
@@ -141,9 +161,9 @@ fn sortByOffsetInner(self: *Self, index: u32, len: u32, generated: *List) std.me
                 if (change_post_offset) |change|
                     generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{ .value = change.value, .offset = 0 } } });
 
-                if (tag == .cond_loop) {
+                if (tag.isBlock()) {
                     const instr_i = generated.len;
-                    generated.appendAssumeCapacity(.{ .tag = .cond_loop, .payload = undefined });
+                    generated.appendAssumeCapacity(.{ .tag = tag, .payload = undefined });
 
                     const old_len = self.instructions.items(.payload)[i].cond_branch.then_len;
                     const new_len = try self.sortByOffsetInner(i + 1, old_len, generated);
@@ -178,4 +198,70 @@ fn sortByOffsetInner(self: *Self, index: u32, len: u32, generated: *List) std.me
         generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{ .value = change.value, .offset = 0 } } });
 
     return @intCast(u32, generated.len - initial_len);
+}
+
+fn simpleLoop(self: *Self) !void {
+    var generated = List{};
+    errdefer generated.deinit(self.allocator);
+    try generated.ensureTotalCapacity(self.allocator, self.instructions.len);
+
+    try self.simpleLoopInner(0, @intCast(u32, self.instructions.len), false, &generated);
+
+    self.instructions.deinit(self.allocator);
+    self.instructions = generated;
+}
+
+fn simpleLoopInner(self: *Self, index: u32, len: u32, is_block: bool, generated: *List) std.mem.Allocator.Error!void {
+    var is_simple = false;
+    var i = index;
+
+    var changes = std.AutoHashMap(i32, i32).init(self.allocator);
+    defer changes.deinit(); // add { offset, value }
+
+    if (is_block and self.instructions.items(.tag)[index - 1] == .cond_loop) {
+        is_simple = blk: while (i < index + len) {
+            switch (self.instructions.items(.tag)[i]) {
+                .add => {
+                    const value_offset = self.instructions.items(.payload)[i].value_offset;
+                    const entry = try changes.getOrPutValue(value_offset.offset, 0);
+                    entry.value_ptr.* += value_offset.value;
+                },
+                else => break :blk false,
+            }
+            i += 1;
+        } else if (changes.fetchRemove(0)) |first| first.value == -1 else false;
+    }
+
+    if (is_simple) {
+        if (changes.count() != 0) {
+            generated.appendAssumeCapacity(.{ .tag = .cond_branch, .payload = undefined });
+            const initial_len = generated.len;
+
+            var iter = changes.iterator();
+            while (iter.next()) |change|
+                generated.appendAssumeCapacity(.{ .tag = .mul, .payload = .{ .value_offset = .{ .value = change.value_ptr.*, .offset = change.key_ptr.* } } });
+
+            generated.appendAssumeCapacity(.{ .tag = .set, .payload = .{ .value_offset = .{ .value = 0, .offset = 0 } } });
+
+            generated.items(.payload)[initial_len - 1] = .{ .cond_branch = .{ .then_len = @intCast(u32, generated.len - initial_len) } };
+        } else {
+            generated.appendAssumeCapacity(.{ .tag = .set, .payload = .{ .value_offset = .{ .value = 0, .offset = 0 } } });
+        }
+    } else {
+        if (is_block) generated.appendAssumeCapacity(.{ .tag = self.instructions.items(.tag)[index - 1], .payload = undefined });
+        const initial_len = generated.len;
+        i = index;
+        while (i < index + len) : (i += 1) {
+            const tag = self.instructions.items(.tag)[i];
+            if (tag.isBlock()) {
+                const block_len = self.instructions.items(.payload)[i].cond_branch.then_len;
+                try self.simpleLoopInner(i + 1, block_len, true, generated);
+                i += block_len;
+            }
+            else {
+                generated.appendAssumeCapacity(self.instructions.get(i));
+            }
+        }
+        if (is_block) generated.items(.payload)[initial_len - 1] = .{ .cond_branch = .{ .then_len = @intCast(u32, generated.len - initial_len) } };
+    }
 }

@@ -45,8 +45,15 @@ fn genInner(self: *Self, index: u32, len: u32) std.mem.Allocator.Error!void {
                 try self.loopEnd(@intCast(u32, start));
             },
 
-            // .set => try self.set(instr.payload.value_offset.value, instr.payload.value_offset.offset),
-            // .mul => try self.mul(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+            .cond_branch => {
+                const start = self.code.items.len;
+                try self.branchStart();
+                try self.genInner(i + 1, instr.payload.cond_branch.then_len);
+                i += instr.payload.cond_branch.then_len;
+                self.branchEnd(@intCast(u32, start));
+            },
+            .set => try self.set(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+            .mul => try self.mul(instr.payload.value_offset.value, instr.payload.value_offset.offset),
         }
     }
 }
@@ -185,7 +192,6 @@ fn loopStart(self: *Self) !void {
         0x0f, 0x84, 0x00, 0x00,
         0x00, 0x00,
     });
-
 }
 
 fn loopEnd(self: *Self, start: u32) !void {
@@ -202,6 +208,79 @@ fn loopEnd(self: *Self, start: u32) !void {
     });
     // finish our jne instruction
     try self.code.appendSlice(&@bitCast([4]u8, -@intCast(i32, offset)));
+}
+
+fn branchStart(self: *Self) !void {
+    try self.code.appendSlice(&[_]u8{
+        // cmp byte [r10], 0
+        0x41, 0x80, 0x3a, 0x00,
+        // je <end of branch> ; zeroes are filled in when the branch is closed
+        0x0f, 0x84, 0x00, 0x00, 0x00, 0x00,
+    });
+}
+
+fn branchEnd(self: *Self, start: u32) void {
+    const end = self.code.items.len;
+    const offset = end - start - 10;
+    std.mem.copy(u8, self.code.items[start + 6 ..][0..4], &@bitCast([4]u8, @intCast(i32, offset)));
+}
+
+fn set(self: *Self, value: i32, offset: i32) !void {
+    if (offset == 0) {
+        // mov [r10], value
+        try self.code.appendSlice(&[_]u8{ 0x41, 0xc6, 0x02, @intCast(u8, value) });
+    } else if (offset <= std.math.maxInt(i8) and offset >= std.math.minInt(i8)) {
+        // mov [r10 + offset], value
+        try self.code.appendSlice(&[_]u8{ 0x41, 0xc6, 0x42, @bitCast(u8, @intCast(i8, offset)), @intCast(u8, value) });
+    } else {
+        // mov [r10 + offset], value
+        try self.code.appendSlice(&[_]u8{ 0x41, 0xc6, 0x82 });
+        try self.code.appendSlice(&@bitCast([4]u8, offset));
+        try self.code.append(@intCast(u8, value));
+    }
+}
+
+fn mul(self: *Self, value: i32, offset: i32) !void {
+    try self.code.appendSlice(&[_]u8{
+        // mov al, value
+        0xb0, @intCast(u8, std.math.absInt(value) catch unreachable),
+        // mul [r10]
+        0x41, 0xf6,
+        0x22,
+    });
+    if (value > 0) {
+        if (offset == 0) {
+            try self.code.appendSlice(&[_]u8{
+                // add [r10], al
+                0x41, 0x00, 0x02,
+            });
+        } else if (offset <= std.math.maxInt(i8) and offset >= std.math.minInt(i8)) {
+            try self.code.appendSlice(&[_]u8{
+                // add [r10 + offset], al
+                0x41, 0x00, 0x42, @bitCast(u8, @intCast(i8, offset)),
+            });
+        } else {
+            // add [r10 + offset], al
+            try self.code.appendSlice(&[_]u8{ 0x41, 0x00, 0x82 });
+            try self.code.appendSlice(&@bitCast([4]u8, offset));
+        }
+    } else {
+        if (offset == 0) {
+            try self.code.appendSlice(&[_]u8{
+                // sub [r10], al
+                0x41, 0x28, 0x02,
+            });
+        } else if (offset <= std.math.maxInt(i8) and offset >= std.math.minInt(i8)) {
+            try self.code.appendSlice(&[_]u8{
+                // sub [r10 + offset], al
+                0x41, 0x28, 0x42, @bitCast(u8, @intCast(i8, offset)),
+            });
+        } else {
+            // sub [r10 + offset], al
+            try self.code.appendSlice(&[_]u8{ 0x41, 0x28, 0x82 });
+            try self.code.appendSlice(&@bitCast([4]u8, offset));
+        }
+    }
 }
 
 fn exit(self: *Self) !void {

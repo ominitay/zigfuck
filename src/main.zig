@@ -36,6 +36,8 @@ fn generate(allocator: std.mem.Allocator, cg: anytype, source: []const u8, write
     defer bir.deinit();
     try bir.optimise();
 
+    try bir.print(std.io.getStdOut().writer());
+
     var buf = std.io.bufferedWriter(writer);
     const w = buf.writer();
 
