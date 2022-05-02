@@ -3,26 +3,22 @@ const std = @import("std");
 const Self = @This();
 
 pub const Tag = enum(u3) {
-    add, // Payload.value_offset
-    move, // Payload.value
-    output, // Payload.value
-    input, // Payload.value
-    loop_begin, // Payload.none
-    loop_end, // Payload.none
-
-    pub fn isMove(t: Tag) bool {
-        return switch (t) {
-            .move_right, .move_left => true,
-            else => false,
-        };
-    }
-
-    pub fn isIncOrDec(t: Tag) bool {
-        return switch (t) {
-            .increment, .decrement => true,
-            else => false,
-        };
-    }
+    // Adds a signed value to the cell specified by the offset to the current cell.
+    // Uses the `value_offset` field.
+    add,
+    // Adds a signed value to the current cell pointer.
+    // Uses the `value` field.
+    move,
+    // Outputs the value in the cell specified by the offset to stdout.
+    // Uses the `offset` field.
+    output,
+    // Reads a character from stdin, setting the cell specified by the offset to the value.
+    // If EOF is reached, the value in the cell will be left unchanged.
+    // Uses the `offset` field.`
+    input,
+    // Loops over the specified instructions, so long as the current cell is not zero.
+    // Uses the `cond_branch` field.
+    cond_loop,
 };
 
 pub const Instruction = struct {
@@ -35,9 +31,12 @@ pub const Payload = packed union {
         value: i32,
         offset: i32,
     },
-
     value: i32,
-    none: void,
+    offset: i32,
+    cond_branch: packed struct {
+        // This field specifies the length of the branch's 'then' block.
+        then_len: u32,
+    },
 };
 
 pub const List = std.MultiArrayList(Instruction);
@@ -58,14 +57,26 @@ pub fn deinit(self: *Self) void {
 
 pub fn print(self: Self, writer: anytype) !void {
     try writer.print("Bir Dump:\nInstruction count: {d}\n", .{self.instructions.len});
-    var i: u32 = 0;
-    while (i < self.instructions.len) : (i += 1) {
+    try self.printInner(writer, 0, @intCast(u32, self.instructions.len), 0);
+}
+
+fn printInner(self: Self, writer: anytype, index: u32, len: u32, indent: u32) @TypeOf(writer).Error!void {
+    var i: u32 = index;
+    while (i < index + len) : (i += 1) {
         const instr = self.instructions.get(i);
+        try writer.writeByteNTimes(' ', indent);
         try writer.print("%{d}: {s}", .{ i, @tagName(instr.tag) });
         switch (instr.tag) {
             .add => try writer.print(", {d} @ {d}", .{ instr.payload.value_offset.value, instr.payload.value_offset.offset }),
-            .move, .output, .input => try writer.print(", {d}", .{instr.payload.value}),
-            .loop_begin, .loop_end => {},
+            .move => try writer.print(", {d}", .{instr.payload.value}),
+            .output, .input => try writer.print(", {d}", .{instr.payload.offset}),
+            .cond_loop => {
+                try writer.writeAll(", {\n");
+                try self.printInner(writer, i + 1, instr.payload.cond_branch.then_len, indent + 2);
+                i += instr.payload.cond_branch.then_len;
+                try writer.writeByteNTimes(' ', indent);
+                try writer.writeAll("}");
+            },
         }
         try writer.writeByte('\n');
     }
@@ -84,12 +95,21 @@ fn sortByOffset(self: *Self) !void {
     errdefer generated.deinit(self.allocator);
     try generated.ensureTotalCapacity(self.allocator, self.instructions.len);
 
+    _ = try self.sortByOffsetInner(0, @intCast(u32, self.instructions.len), &generated);
+
+    self.instructions.deinit(self.allocator);
+    self.instructions = generated;
+}
+
+fn sortByOffsetInner(self: *Self, index: u32, len: u32, generated: *List) std.mem.Allocator.Error!u32 {
+    const initial_len = generated.len;
+
     var changes = std.AutoHashMap(i32, i32).init(self.allocator); // add { offset, value }
     defer changes.deinit();
     var offset: i32 = 0;
 
-    var i: u32 = 0;
-    while (i < self.instructions.len) : (i += 1) {
+    var i: u32 = index;
+    while (i < index + len) : (i += 1) {
         switch (self.instructions.items(.tag)[i]) {
             .add => {
                 const instr_value = self.instructions.get(i).payload.value_offset;
@@ -100,7 +120,7 @@ fn sortByOffset(self: *Self) !void {
                 const instr_value = self.instructions.get(i).payload.value;
                 offset += instr_value;
             },
-            else => {
+            else => |tag| {
                 const change_post_offset = changes.fetchRemove(offset);
                 if (changes.count() != 0) {
                     var iter = changes.iterator();
@@ -108,24 +128,54 @@ fn sortByOffset(self: *Self) !void {
                         generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{
                             .value = change.value_ptr.*,
                             .offset = change.key_ptr.*,
-                        }}});
+                        } } });
                     }
                     changes.clearRetainingCapacity();
                 }
 
                 if (offset != 0) {
-                    generated.appendAssumeCapacity(.{ .tag = .move, .payload = .{ .value = offset }});
+                    generated.appendAssumeCapacity(.{ .tag = .move, .payload = .{ .value = offset } });
                     offset = 0;
                 }
 
                 if (change_post_offset) |change|
-                    generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{ .value = change.value, .offset = 0 }}});
+                    generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{ .value = change.value, .offset = 0 } } });
 
-                generated.appendAssumeCapacity(self.instructions.get(i));
+                if (tag == .cond_loop) {
+                    const instr_i = generated.len;
+                    generated.appendAssumeCapacity(.{ .tag = .cond_loop, .payload = undefined });
+
+                    const old_len = self.instructions.items(.payload)[i].cond_branch.then_len;
+                    const new_len = try self.sortByOffsetInner(i + 1, old_len, generated);
+                    i += old_len;
+
+                    generated.items(.payload)[instr_i] = .{ .cond_branch = .{ .then_len = new_len } };
+                } else {
+                    generated.appendAssumeCapacity(self.instructions.get(i));
+                }
             },
         }
     }
 
-    self.instructions.deinit(self.allocator);
-    self.instructions = generated;
+    const change_post_offset = changes.fetchRemove(offset);
+    if (changes.count() != 0) {
+        var iter = changes.iterator();
+        while (iter.next()) |change| {
+            generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{
+                .value = change.value_ptr.*,
+                .offset = change.key_ptr.*,
+            } } });
+        }
+        changes.clearRetainingCapacity();
+    }
+
+    if (offset != 0) {
+        generated.appendAssumeCapacity(.{ .tag = .move, .payload = .{ .value = offset } });
+        offset = 0;
+    }
+
+    if (change_post_offset) |change|
+        generated.appendAssumeCapacity(.{ .tag = .add, .payload = .{ .value_offset = .{ .value = change.value, .offset = 0 } } });
+
+    return @intCast(u32, generated.len - initial_len);
 }

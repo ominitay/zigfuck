@@ -4,13 +4,11 @@ const Bir = @import("../Bir.zig");
 const Self = @This();
 
 code: std.ArrayList(u8),
-loopstack: std.ArrayList(u64),
 bir: Bir.List.Slice,
 
 pub fn generate(allocator: std.mem.Allocator, bir: Bir.List.Slice) ![]const u8 {
     var self = Self{
         .code = std.ArrayList(u8).init(allocator),
-        .loopstack = std.ArrayList(u64).init(allocator),
         .bir = bir,
     };
     defer self.deinit();
@@ -20,28 +18,37 @@ pub fn generate(allocator: std.mem.Allocator, bir: Bir.List.Slice) ![]const u8 {
 
 fn deinit(self: Self) void {
     self.code.deinit();
-    self.loopstack.deinit();
 }
 
 fn gen(self: *Self) ![]const u8 {
-    var i: u32 = 0;
-    while (i < self.bir.len) : (i += 1) {
-        const instr = self.bir.toMultiArrayList().get(i);
-        switch (instr.tag) {
-            .move => try self.move(instr.payload.value),
-            .add => try self.add(instr.payload.value_offset.value, instr.payload.value_offset.offset),
-            .output => try self.output(instr.payload.value),
-            .input => try self.input(instr.payload.value),
-            .loop_begin => try self.loopBegin(),
-            .loop_end => try self.loopEnd(),
-        }
-    }
-
-    if (self.loopstack.items.len != 0) return error.NoLoopEnd;
+    try self.genInner(0, @intCast(u32, self.bir.len));
 
     try self.exit();
 
     return self.code.toOwnedSlice();
+}
+
+fn genInner(self: *Self, index: u32, len: u32) std.mem.Allocator.Error!void {
+    var i: u32 = index;
+    while (i < index + len) : (i += 1) {
+        const instr = self.bir.toMultiArrayList().get(i);
+        switch (instr.tag) {
+            .move => try self.move(instr.payload.value),
+            .add => try self.add(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+            .output => try self.output(instr.payload.offset),
+            .input => try self.input(instr.payload.offset),
+            .cond_loop => {
+                const start = self.code.items.len;
+                try self.loopStart();
+                try self.genInner(i + 1, instr.payload.cond_branch.then_len);
+                i += instr.payload.cond_branch.then_len;
+                try self.loopEnd(@intCast(u32, start));
+            },
+
+            // .set => try self.set(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+            // .mul => try self.mul(instr.payload.value_offset.value, instr.payload.value_offset.offset),
+        }
+    }
 }
 
 fn move(self: *Self, value: i32) !void {
@@ -97,7 +104,7 @@ fn add(self: *Self, value: i32, offset: i32) !void {
         } else {
             if (value == 1) {
                 // inc byte [r10 + offset]
-                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x82});
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x82 });
                 try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
             } else {
                 // add byte [r10 + offset], value
@@ -126,7 +133,7 @@ fn add(self: *Self, value: i32, offset: i32) !void {
         } else {
             if (-value == 1) {
                 // inc byte [r10 + offset]
-                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x8a});
+                try self.code.appendSlice(&[_]u8{ 0x41, 0xfe, 0x8a });
                 try self.code.appendSlice(&@bitCast([4]u8, offset)); // write the 32 bit displacement
             } else {
                 // sub byte [r10 + offset], value
@@ -170,8 +177,7 @@ fn input(self: *Self, offset: i32) !void {
     try self.syscall();
 }
 
-fn loopBegin(self: *Self) !void {
-    try self.loopstack.append(self.code.items.len);
+fn loopStart(self: *Self) !void {
     try self.code.appendSlice(&[_]u8{
         // cmp byte [r10], 0
         0x41, 0x80, 0x3a, 0x00,
@@ -179,10 +185,10 @@ fn loopBegin(self: *Self) !void {
         0x0f, 0x84, 0x00, 0x00,
         0x00, 0x00,
     });
+
 }
 
-fn loopEnd(self: *Self) !void {
-    const start = self.loopstack.popOrNull() orelse return error.NoLoopStart;
+fn loopEnd(self: *Self, start: u32) !void {
     const end = self.code.items.len;
 
     const offset = end - start;
