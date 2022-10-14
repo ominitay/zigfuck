@@ -94,7 +94,7 @@ fn printInner(self: Self, writer: anytype, index: u32, len: u32, indent: u32) @T
             .move => try writer.print(", {d}", .{instr.payload.value}),
             .output, .input => try writer.print(", {d}", .{instr.payload.offset}),
             .cond_loop, .cond_branch => {
-                try writer.writeAll(", {\n");
+                try writer.writeAll(" {\n");
                 try self.printInner(writer, i + 1, instr.payload.cond_branch.then_len, indent + 2);
                 i += instr.payload.cond_branch.then_len;
                 try writer.writeByteNTimes(' ', indent);
