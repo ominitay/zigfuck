@@ -74,6 +74,10 @@ pub fn deinit(self: *Self) void {
     self.instructions.deinit(self.allocator);
 }
 
+pub fn slice(self: Self) List.Slice {
+    return self.instructions.slice();
+}
+
 pub fn print(self: Self, writer: anytype) !void {
     try writer.print("Bir Dump:\nInstruction count: {d}\n", .{self.instructions.len});
     try self.printInner(writer, 0, @intCast(u32, self.instructions.len), 0);

@@ -1,19 +1,164 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Bir = @import("../Bir.zig");
+const elf = @import("../elf.zig");
+
 const Self = @This();
+
+pub const default_path = "a.out";
+pub const cell_count = 30000;
 
 code: std.ArrayList(u8),
 bir: Bir.List.Slice,
 
-pub fn generate(allocator: std.mem.Allocator, bir: Bir.List.Slice) ![]const u8 {
+pub fn generate(allocator: std.mem.Allocator, output_dir: std.fs.Dir, output_path: ?[]const u8, bir: Bir.List.Slice) !void {
     var self = Self{
         .code = std.ArrayList(u8).init(allocator),
         .bir = bir,
     };
+
     defer self.deinit();
 
-    return try self.gen();
+    // Exclusive (write) lock, as we don't want another compiler instance to be modifying the same file!
+    const output_file = try output_dir.createFile(output_path orelse default_path, .{ .lock = .Exclusive, .lock_nonblocking = true });
+    defer output_file.close();
+
+    // Make the file executable. We don't do that in `createFile`, as we might be overwriting an existing file.
+    if (builtin.os.tag != .windows) try output_file.chmod(0o755);
+
+    var buf = std.io.bufferedWriter(output_file.writer());
+    const writer = buf.writer();
+
+    const code = try self.gen();
+    defer allocator.free(code);
+
+    var code_prefix = [_]u8{ 0x49, 0xba } ++ [_]u8{0x00} ** 8; // this is used to load the address of the first cell to r10. the address is copied in later once we know what it will be.
+    const shstrtab = "\x00.text\x00.bss\x00.shstrtab\x00".*;
+    const section_count = 4;
+    const phdr_count = 3;
+
+    const bss_len = cell_count;
+
+    const header_len = @sizeOf(elf.Header) + phdr_count * @sizeOf(elf.ProgramHeader);
+
+    const text_off = header_len;
+    const text_pos = header_len + elf.base_addr + 0x1000;
+    const text_len = code.len + code_prefix.len;
+    const shstrtab_off = text_off + text_len;
+    const section_header_off = shstrtab_off + shstrtab.len;
+    const bss_off = 0;
+    const bss_pos = elf.alignUp(text_pos + text_len, 0x1000);
+
+    std.mem.copy(u8, code_prefix[2..], @bitCast([8]u8, bss_pos)[0..]); // add the correct address for the first cell
+
+    const header = elf.Header{
+        .class = .@"64",
+        .endian = .little,
+        .type = .executable,
+        .arch = .x64,
+        .entry = text_pos,
+        .shdr_off = section_header_off,
+        .phdr_ent_count = phdr_count,
+        .shdr_ent_count = section_count,
+        .shdr_str_index = 2,
+    };
+    try writer.writeStruct(header);
+
+    const program_headers = [phdr_count]elf.ProgramHeader{
+        .{ // phdrs
+            .type = .loadable,
+            .flags = .{ .readable = true },
+            .offset = 0,
+            .virt_addr = elf.base_addr,
+            .phys_addr = elf.base_addr,
+            .file_size = header_len,
+            .mem_size = header_len,
+            .alignment = 0x8,
+        },
+        .{ // .text and .bss
+            .type = .loadable,
+            .flags = .{ .executable = true, .readable = true },
+            .offset = text_off,
+            .virt_addr = text_pos,
+            .phys_addr = text_pos,
+            .file_size = text_len,
+            .mem_size = text_len,
+            .alignment = 0x1000,
+        },
+        .{ // .bss
+            .type = .loadable,
+            .flags = .{ .writable = true, .readable = true },
+            .offset = bss_off,
+            .virt_addr = bss_pos,
+            .phys_addr = bss_pos,
+            .file_size = 0,
+            .mem_size = bss_len,
+            .alignment = 0x1000,
+        },
+    };
+    for (program_headers) |phdr| try writer.writeStruct(phdr);
+
+    try writer.writeAll(&code_prefix);
+    try writer.writeAll(code);
+    try writer.writeAll(&shstrtab);
+
+    const text_str = @intCast(u32, std.mem.indexOf(u8, &shstrtab, ".text").?);
+    const bss_str = @intCast(u32, std.mem.indexOf(u8, &shstrtab, ".bss").?);
+    const shstrtab_str = @intCast(u32, std.mem.indexOf(u8, &shstrtab, ".shstrtab").?);
+    const section_headers = [section_count]elf.SectionHeader{
+        .{ // STN_UNDEF
+            .name = 0,
+            .type = .@"null",
+            .flags = .{},
+            .addr = 0,
+            .offset = 0,
+            .size = 0,
+            .link = 0,
+            .info = 0,
+            .alignment = 0,
+            .entry_size = 0,
+        },
+        .{ // .text
+            .name = text_str,
+            .type = .prog_bits,
+            .flags = .{ .alloc = true, .executable = true },
+            .addr = text_pos,
+            .offset = text_off,
+            .size = text_len,
+            .link = 0,
+            .info = 0,
+            .alignment = 0,
+            .entry_size = 0,
+        },
+        .{ // .shstrtab
+            .name = shstrtab_str,
+            .type = .string_table,
+            .flags = .{},
+            .addr = 0,
+            .offset = shstrtab_off,
+            .size = shstrtab.len,
+            .link = 0,
+            .info = 0,
+            .alignment = 0,
+            .entry_size = 0,
+        },
+        .{ // .bss
+            .name = bss_str,
+            .type = .no_bits,
+            .flags = .{ .writable = true, .alloc = true },
+            .addr = bss_pos,
+            .offset = bss_off,
+            .size = bss_len,
+            .link = 0,
+            .info = 0,
+            .alignment = 0,
+            .entry_size = 0,
+        },
+    };
+    for (section_headers) |shdr| try writer.writeStruct(shdr);
+
+    try buf.flush();
 }
 
 fn deinit(self: Self) void {
@@ -215,7 +360,8 @@ fn branchStart(self: *Self) !void {
         // cmp byte [r10], 0
         0x41, 0x80, 0x3a, 0x00,
         // je <end of branch> ; zeroes are filled in when the branch is closed
-        0x0f, 0x84, 0x00, 0x00, 0x00, 0x00,
+        0x0f, 0x84, 0x00, 0x00,
+        0x00, 0x00,
     });
 }
 
