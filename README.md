@@ -1,5 +1,19 @@
 # Zigfuck
 
+Zigfuck is a compiler for the famous esolang "brainfuck", written in Zig. 
+
+## Backends
+
+Currently, there is only a native backend which outputs executables targetting Linux x64.
+
+## Targets
+
+The only supported target is Linux x64. 
+
+## Roadmap
+
+Zigfuck is intended to implement more sophisticated optimisations, and more backends, for broader target support (and further optimisation).
+
 ## License
 
 Copyright © ominitay 2022
