@@ -261,8 +261,7 @@ fn simpleLoopInner(self: *Self, index: u32, len: u32, is_block: bool, generated:
                 const block_len = self.instructions.items(.payload)[i].cond_branch.then_len;
                 try self.simpleLoopInner(i + 1, block_len, true, generated);
                 i += block_len;
-            }
-            else {
+            } else {
                 generated.appendAssumeCapacity(self.instructions.get(i));
             }
         }

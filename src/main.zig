@@ -39,7 +39,6 @@ pub fn main() !void {
 
     try bir.optimise();
 
-
     if (options.options.@"verbose-bir") {
         try stdout.writeAll("Post-optimisation:\n");
         try bir.print(stdout);
