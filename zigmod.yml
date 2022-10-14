@@ -3,3 +3,4 @@ name: zigfuck
 license: EUPL-1.2
 description:
 root_dependencies:
+  - src: git https://github.com/MasterQ32/zig-args
